@@ -1,0 +1,74 @@
+version: "3.8"
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+      - "6380:6379"
+      - "6381:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+        - ./redis-data/data-1:/data
+    networks:
+        backend:
+            aliases:
+                - redis-node-1
+  redis2:
+    image: redis:latest
+    ports:
+        - "6382:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+        - ./redis-data/data-2:/data
+    networks:
+        backend:
+            aliases:
+                - redis-node-2
+  redis3:
+    image: redis:latest
+    ports:
+        - "6383:6379"
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+        - ./redis-data/data-3:/data
+    networks:
+        backend:
+            aliases:
+                - redis-node-3
+  redis-cluster-setup:
+      image: redis:latest
+      depends_on:
+          - redis
+          - redis2
+          - redis3
+      networks:
+          backend:
+              aliases:
+                  - redis-cluster-setup
+      entrypoint: sh -c 'sleep 10 && redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 --cluster-replicas 0 --cluster-yes'      
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+        backend:
+            aliases:
+                - rabbitmq-service
+#   app:
+#         build:
+#             context: .
+#             dockerfile: Dockerfile
+#         ports:
+#             - "3000:3000"
+#         depends_on:
+#             - redis-cluster-setup
+#             - rabbitmq
+#         networks:
+#             backend:
+#                 aliases:
+#                     - app-service
+
+networks:
+  backend:
+    driver: bridge
