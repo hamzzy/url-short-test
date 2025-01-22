@@ -1,70 +1,151 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-  OnModuleDestroy,
-} from '@nestjs/common';
+// async-analytics.ts
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { RedisClient } from './redis-client';
-import { connect, Channel, Connection } from 'amqplib';
+import { connect, Channel, Connection, ConsumeMessage } from 'amqplib';
+import { ClickData } from 'src/url/entities/click-data.entity';
 
 @Injectable()
-export class AsyncAnalytics implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(AsyncAnalytics.name);
+export class AsyncAnalytics implements OnModuleDestroy {
   private channel: Channel;
   private connection: Connection;
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly redisClient: RedisClient,
-  ) {}
+  private readonly logger = new Logger(AsyncAnalytics.name);
+  private readonly QUEUE_NAME = 'click_events';
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
 
-  async onModuleInit() {
+  constructor(private configService: ConfigService) {
+    this.initialize();
+  }
+  public async initialize() {
     try {
-      this.connection = await connect(this.configService.get('rabbitmq.url'));
-      this.channel = await this.connection.createChannel();
-      this.logger.log(`Connection to rabbitmq successful`);
-      await this.channel.assertQueue('analytics', { durable: true });
+      await this.connect();
+    } catch (err) {
+      this.logger.error(`Failed to initialize AsyncAnalytics: ${err}`);
+    }
+  }
 
-      this.channel.consume(
-        'analytics',
-        async (message) => {
-          if (message) {
+  private async connect() {
+    try {
+      this.connection = await connect(this.configService.get('rabbitmq_url'));
+      this.channel = await this.connection.createChannel();
+      await this.channel.assertQueue(this.QUEUE_NAME, { durable: true });
+      this.channel.prefetch(100); // Adjust prefetch value
+
+      this.channel.on('error', (err) => {
+        this.logger.error(`Channel error: ${err}`);
+        this.reconnect();
+      });
+
+      this.channel.on('close', () => {
+        this.logger.warn('Channel closed');
+        this.reconnect();
+      });
+
+      this.reconnectAttempts = 0;
+    } catch (err) {
+      this.logger.error(`Connection error: ${err}`);
+      throw err;
+    }
+  }
+  private async reconnect() {
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      this.logger.error('Max reconnection attempts reached');
+      return;
+    }
+
+    this.reconnectAttempts++;
+    this.logger.log(
+      `Attempting to reconnect (${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`,
+    );
+    try {
+      await new Promise((resolve) =>
+        setTimeout(resolve, 1000 * this.reconnectAttempts),
+      );
+      await this.connect();
+    } catch (err) {
+      this.logger.error(`Reconnection failed: ${err}`);
+    }
+  }
+  // async publish(data: { clickKey: string; clickData: ClickData }) {
+  //   try {
+  //     if (!this.channel || this.channel.closed) {
+  //       await this.connect();
+  //     }
+
+  //     const message = JSON.stringify(data);
+  //     await this.channel.sendToQueue(this.QUEUE_NAME, Buffer.from(message), {
+  //       persistent: true,
+  //     });
+  //   } catch (err) {
+  //     this.logger.error(`Error publishing message: ${err}`);
+  //     throw err;
+  //   }
+  // }
+
+  async publishBatch(data: { clickKey: string; clickData: ClickData }[]) {
+    try {
+      if (!this.channel || this.channel.closed) {
+        await this.connect();
+      }
+
+      const messages = data.map((d) => JSON.stringify(d));
+      for (const message of messages) {
+        await this.channel.sendToQueue(this.QUEUE_NAME, Buffer.from(message), {
+          persistent: true,
+        });
+      }
+    } catch (err) {
+      this.logger.error(`Error publishing batch messages: ${err}`);
+      throw err;
+    }
+  }
+
+  async consume(callback: (data: any) => Promise<void>) {
+    try {
+      if (!this.channel || this.channel.closed) {
+        await this.connect();
+      }
+
+      await this.channel.consume(
+        this.QUEUE_NAME,
+        async (msg: ConsumeMessage | null) => {
+          if (msg) {
             try {
-              const { clickKey, clickData } = JSON.parse(
-                message.content.toString(),
-              );
-              await this.redisClient.rpush(clickKey, JSON.stringify(clickData));
-              this.channel.ack(message);
+              const data = JSON.parse(msg.content.toString());
+              await callback(data);
+              await this.channel.ack(msg);
             } catch (err) {
-              this.logger.error(`Failed to process ${err}`);
-              this.channel.reject(message, false);
+              this.logger.error(`Error processing message: ${err}`);
+
+              const retryCount =
+                (msg.properties.headers?.['x-retry-count'] || 0) + 1;
+              if (retryCount < 3) {
+                await this.channel.nack(msg, false, true, {
+                  headers: { 'x-retry-count': retryCount },
+                });
+              } else {
+                await this.channel.nack(msg, false, false);
+              }
             }
           }
         },
         { noAck: false },
       );
     } catch (err) {
-      this.logger.error(`Failed to connect to rabbitmq ${err}`);
-    }
-  }
-  async publish(message: any): Promise<void> {
-    if (this.channel) {
-      await this.channel.sendToQueue(
-        'analytics',
-        Buffer.from(JSON.stringify(message)),
-        { persistent: true },
-      );
-    } else {
-      this.logger.error('Failed to publish since there is no channel');
+      this.logger.error(`Error setting up consumer: ${err}`);
+      throw err;
     }
   }
   async onModuleDestroy() {
-    if (this.channel) {
-      await this.channel.close();
-    }
-
-    if (this.connection) {
-      await this.connection.close();
+    try {
+      if (this.channel) {
+        await this.channel.close();
+      }
+      if (this.connection) {
+        await this.connection.close();
+      }
+    } catch (err) {
+      this.logger.error(`Error closing connections: ${err}`);
     }
   }
 }

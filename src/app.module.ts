@@ -15,6 +15,7 @@ import configuration from './config/configurations';
       isGlobal: true,
     }),
     UrlModule,
+
   ],
   controllers: [AppController],
   providers: [AppService],

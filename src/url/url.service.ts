@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { RedisClient } from '../utils/redis-client';
@@ -6,17 +6,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { L1Cache } from '../utils/l1-cache';
-import { BloomFilter } from '../utils/bloom-filter';
 import { CircuitBreaker } from '../utils/circuit-breaker';
 import { AsyncAnalytics } from '../utils/async-analytics';
-import { ClickData } from './entities/click-data.entity';
-import { ShortenUrlDto } from './dto/shorten-url.dto';
+import { ClickData } from '../url/entities/click-data.entity';
+import { ShortenUrlDto } from '../url/dto/shorten-url.dto';
+import { EnhancedBloomFilter } from '../utils/bloom-filter';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 
 @Injectable()
 export class UrlService {
   private readonly logger = new Logger(UrlService.name);
-  private bloomFilter: BloomFilter;
+  private bloomFilter: EnhancedBloomFilter;
+  private clickDataBatch: { clickKey: string; clickData: ClickData }[] = [];
+  private BATCH_SIZE = 10;
+  private BATCH_INTERVAL = 1000; // 1 second
 
   private getDeviceType(userAgent: string): string {
     if (!userAgent) return 'Unknown';
@@ -34,7 +37,9 @@ export class UrlService {
     private readonly asyncAnalytics: AsyncAnalytics,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
   ) {
-    this.bloomFilter = new BloomFilter(10000);
+    this.bloomFilter = new EnhancedBloomFilter(1000000, 0.01, {
+      counting: true,
+    });
   }
 
   private generateShortCode(length: number): string {
@@ -52,95 +57,139 @@ export class UrlService {
     const { url, customCode, ttlMinutes } = shortenUrlDto;
     const shortCode = customCode || this.generateShortCode(7);
     const redisUrlKey = `url:${shortCode}`;
-    const result = await this.circuitBreaker.execute(async () => {
-      const exists = await this.redisClient.exists(redisUrlKey);
-      if (exists) {
-        throw new Error('Custom code already in use');
-      }
-      await this.redisClient.set(redisUrlKey, url);
 
-      if (ttlMinutes) {
-        await this.redisClient.expire(redisUrlKey, ttlMinutes * 60);
+    try {
+      // Check the Bloom filter
+      if (await this.bloomFilter.test(redisUrlKey)) {
+        const exists = await this.redisClient.exists(redisUrlKey);
+        if (exists) {
+          throw new HttpException('Custom code already in use', 400);
+        }
       }
-      this.bloomFilter.add(redisUrlKey);
-      return `${this.configService.get('base_url')}/${shortCode}`;
-    });
-    return { short_url: result };
+
+      const result = await this.circuitBreaker.execute(async () => {
+        await this.redisClient.set(redisUrlKey, url);
+
+        if (ttlMinutes) {
+          await this.redisClient.expire(redisUrlKey, ttlMinutes * 60);
+        }
+
+        // Add to the Bloom filter
+        await this.bloomFilter.add(redisUrlKey);
+
+        return `${this.configService.get('base_url')}/${shortCode}`;
+      });
+
+      return { short_url: result };
+    } catch (err) {
+      this.logger.error(`Error shortening url: ${err}`);
+      throw err;
+    }
   }
 
   async getOriginalUrl(shortCode: string, req: any): Promise<string> {
     const redisUrlKey = `url:${shortCode}`;
     const l1CacheKey = `${redisUrlKey}`;
     const cacheKey = `cache:${shortCode}`;
-    if (this.l1Cache.has(l1CacheKey)) {
-      return this.l1Cache.get(l1CacheKey);
-    }
 
-    // if (!this.bloomFilter.test(redisUrlKey)) {
-    //   throw new Error('Short URL not found');
-    // }
+    try {
+      if (this.l1Cache.has(l1CacheKey)) {
+        return this.l1Cache.get(l1CacheKey);
+      }
 
-    const originalUrl = await this.circuitBreaker.execute(
-      async () => {
-        let cachedUrl = await this.cacheManager.get<string>(cacheKey);
-        if (!cachedUrl) {
-          cachedUrl = await this.redisClient.get(redisUrlKey);
+      // Check the Bloom filter
+      if (!(await this.bloomFilter.test(redisUrlKey))) {
+        throw new Error('Short URL not found');
+      }
+
+      const originalUrl = await this.circuitBreaker.execute(
+        async () => {
+          let cachedUrl = await this.cacheManager.get<string>(cacheKey);
           if (!cachedUrl) {
-            throw new Error('Short URL not found');
+            cachedUrl = await this.redisClient.get(redisUrlKey);
+            if (!cachedUrl) {
+              throw new Error('Short URL not found');
+            }
+            if (this.configService.get('cache_enabled')) {
+              await this.cacheManager.set(cacheKey, cachedUrl, 60);
+            }
           }
-          if (this.configService.get('cache_enabled')) {
-            await this.cacheManager.set(cacheKey, cachedUrl, 60);
-          }
-        }
-        return cachedUrl;
-      },
-      () => {
-        return this.cacheManager.get(cacheKey);
-      },
-    );
+          return cachedUrl;
+        },
+        () => {
+          return this.cacheManager.get(cacheKey);
+        },
+      );
 
-    this.l1Cache.set(l1CacheKey, originalUrl);
+      this.l1Cache.set(l1CacheKey, originalUrl);
 
-    // Store the click data
-    const clickData = new ClickData();
-    clickData.timestamp = new Date().toISOString();
-    clickData.user_agent = req.headers['user-agent'] || 'Unknown';
-    clickData.ip_address = req.ip || 'Unknown';
-    clickData.referer = req.headers['referer'] || 'Direct';
-    clickData.device_type = this.getDeviceType(req.headers['user-agent']);
-    clickData.timestamp_unix = Date.now();
-    clickData.short_code = shortCode;
-    clickData.click_id = uuidv4();
-    const clickKey = `clicks:${shortCode}`;
+      // Store the click data
+      const clickData = new ClickData();
+      clickData.timestamp = new Date().toISOString();
+      clickData.user_agent = req.headers['user-agent'] || 'Unknown';
+      clickData.ip_address = req.ip || 'Unknown';
+      clickData.referer = req.headers['referer'] || 'Direct';
+      clickData.device_type = this.getDeviceType(req.headers['user-agent']);
+      clickData.timestamp_unix = Date.now();
+      clickData.short_code = shortCode;
+      clickData.click_id = uuidv4();
+      const clickKey = `clicks:${shortCode}`;
 
-    await this.asyncAnalytics.publish({
-      clickKey,
-      clickData,
-    });
-    return originalUrl;
+      // Batch the click data
+      this.batchClickData({
+        clickKey,
+        clickData,
+      });
+
+      return originalUrl;
+    } catch (err) {
+      this.logger.error(`Error getting original url: ${err}`);
+      throw err;
+    }
+  }
+
+  private batchClickData(data: { clickKey: string; clickData: ClickData }) {
+    this.clickDataBatch.push(data);
+    if (this.clickDataBatch.length >= this.BATCH_SIZE) {
+      this.flushClickDataBatch();
+    } else {
+      setTimeout(() => this.flushClickDataBatch(), this.BATCH_INTERVAL);
+    }
+  }
+
+  private async flushClickDataBatch() {
+    if (this.clickDataBatch.length > 0) {
+      await this.asyncAnalytics.publishBatch(this.clickDataBatch);
+      this.clickDataBatch = [];
+    }
   }
 
   async getAnalytics(
     shortCode: string,
     query: AnalyticsQueryDto,
   ): Promise<{ clicks: ClickData[] }> {
-    const { limit = 100, offset = 0 } = query;
-    const clickKey = `clicks:${shortCode}`;
-    const clickDataStrings: string[] = await this.circuitBreaker.execute(
-      async () => {
-        return await this.redisClient.lrange(
-          clickKey,
-          offset,
-          offset + limit - 1,
-        );
-      },
-      () => {
-        return [];
-      },
-    );
-    const clicks: ClickData[] = clickDataStrings.map((clickDataString) =>
-      JSON.parse(clickDataString),
-    );
-    return { clicks };
+    try {
+      const { limit = 100, offset = 0 } = query;
+      const clickKey = `clicks:${shortCode}`;
+      const clickDataStrings: string[] = await this.circuitBreaker.execute(
+        async () => {
+          return await this.redisClient.lrange(
+            clickKey,
+            offset,
+            offset + limit - 1,
+          );
+        },
+        () => {
+          return [];
+        },
+      );
+      const clicks: ClickData[] = clickDataStrings.map((clickDataString) =>
+        JSON.parse(clickDataString),
+      );
+      return { clicks };
+    } catch (err) {
+      this.logger.error(`Error getting analytics: ${err}`);
+      throw err;
+    }
   }
 }

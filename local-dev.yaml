@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: url-shortener-app
+  labels:
+    app: url-shortener-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: url-shortener-app
+  template:
+    metadata:
+      labels:
+        app: url-shortener-app
+    spec:
+      containers:
+        - name: url-shortener-container
+          image: url-shortener:latest # Your local image tag
+          imagePullPolicy: IfNotPresent # Use IfNotPresent for local images
+          ports:
+            - containerPort: 3000
+          envFrom:
+           - configMapRef:
+                  name: url-shortener-config # use the name of the config map
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: url-shortener-service
+  labels:
+    app: url-shortener-app
+spec:
+  selector:
+    app: url-shortener-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: url-shortener-config
+data:
+  PORT: "3000"
+  REDIS_URLS: "redis://127.0.0.1:6379,redis://127.0.0.1:6380,redis://127.0.0.1:6381" # if you are running locally
+  BASE_URL: "http://localhost"
+  CACHE_ENABLED: "true"
+  L1_CACHE_SIZE: "1000"
+  RATE_LIMIT_WINDOW_SEC: "60"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  CLEANUP_INTERVAL_MIN: "60"
+  VIRTUAL_NODES: "10"
+  RABBITMQ_URL: "amqp://localhost" # if you are running locally.
+  REDIS_POOL_SIZE: "100" # set the pool size if required.

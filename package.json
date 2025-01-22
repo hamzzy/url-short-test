@@ -17,7 +17,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "load:test": "node ./load_test.mjs"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.0",
@@ -32,12 +33,17 @@
     "cache-manager": "^6.3.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "compression": "^1.7.5",
     "cors": "^2.8.5",
     "farmhash": "^4.0.1",
     "ioredis": "^5.4.2",
+    "k6": "^0.0.0",
     "lru-cache-node": "^1.1.0",
     "nestjs-pino": "^4.2.0",
+    "nestjs-rate-limiter": "^3.1.0",
+    "node-cache": "^5.1.2",
     "pino": "^9.6.0",
+    "redis": "^4.7.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "uuid": "^11.0.5"
@@ -46,6 +52,7 @@
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
+    "@types/compression": "^1.7.5",
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.2",
     "@types/node": "^20.3.1",

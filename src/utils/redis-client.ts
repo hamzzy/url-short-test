@@ -1,11 +1,19 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+// redis-client.ts
+import {
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis, { Cluster } from 'ioredis';
-import { Logger } from '@nestjs/common';
 
 @Injectable()
 export class RedisClient implements OnModuleInit, OnModuleDestroy {
-  private client: Cluster; // Changed from Redis to Cluster
+  multi() {
+    throw new Error('Method not implemented.');
+  }
+  private client: Cluster;
   private readonly logger = new Logger(RedisClient.name);
   private initialConnectionAttempts = 0;
   private maxConnectionAttempts = 5;
@@ -20,7 +28,6 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
         'Invalid redis.urls configuration. Ensure host:port format.',
       );
     }
-
     const nodes = redisUrls.map((url) => {
       const [host, port] = url.replace('redis://', '').split(':');
       return { host, port: parseInt(port, 10) };
@@ -33,14 +40,15 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
   }
-
   private async createClusterClient(
     nodes: Array<{ host: string; port: number }>,
   ) {
     this.client = new Redis.Cluster(nodes, {
       redisOptions: {
         connectTimeout: 1000,
-        maxRetriesPerRequest: 1,
+        maxRetriesPerRequest: null,
+        commandTimeout: 1000, // Add command timeout
+        enableAutoPipelining: true,
       },
       clusterRetryStrategy: (times) => {
         if (times >= this.maxConnectionAttempts) {
@@ -79,10 +87,8 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
         `Node removed from Redis Cluster: ${node.options.host}:${node.options.port}`,
       );
     });
-
     await this.waitForConnection();
   }
-
   private async waitForConnection() {
     try {
       await this.client.ping();
@@ -102,11 +108,19 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // The method signatures remain the same but now use the Cluster type internally
+  async healthCheck(): Promise<boolean> {
+    try {
+      await this.client.ping();
+      return true;
+    } catch (error) {
+      this.logger.error('Redis health check failed:', error);
+      return false;
+    }
+  }
+
   async set(key: string, value: string): Promise<void> {
     await this.client.set(key, value);
   }
-
   async get(key: string): Promise<string | null> {
     return this.client.get(key);
   }
@@ -123,7 +137,6 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
   async rpush(key: string, value: string): Promise<void> {
     await this.client.rpush(key, value);
   }
-
   async lrange(key: string, start: number, stop: number): Promise<string[]> {
     return this.client.lrange(key, start, stop);
   }
@@ -131,7 +144,6 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
   async publish(channel: string, message: string): Promise<number> {
     return this.client.publish(channel, message);
   }
-
   async subscribe(
     channel: string,
     callback: (channel: string, message: string) => void,
@@ -142,6 +154,10 @@ export class RedisClient implements OnModuleInit, OnModuleDestroy {
   }
   async del(key: string): Promise<void> {
     await this.client.del(key);
+  }
+
+  async flushAll() {
+    await this.client.flushall();
   }
 
   async onModuleDestroy() {

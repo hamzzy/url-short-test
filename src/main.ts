@@ -1,30 +1,29 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import cors from 'cors';
 import { ConfigService } from '@nestjs/config';
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 // import { HealthCheckService } from '@nestjs/terminus';
 import { LoadBalancer } from './utils/load-balancer';
 import { AsyncAnalytics } from './utils/async-analytics';
+import compression from 'compression';
 import cluster from 'cluster';
 import os from 'os';
-
 async function bootstrap() {
   if (cluster.isPrimary) {
-    // Fork workers for each CPU core
-    for (let i = 0; i < 2; i++) {
+    const numCPUs = os.cpus().length;
+    for (let i = 0; i < numCPUs; i++) {
       cluster.fork();
     }
-
     cluster.on('exit', (worker) => {
-      // Replace dead workers immediately
-      console.log(`Worker ${worker.process.pid} died, replacing...`);
+      console.log(`Worker ${worker.process.pid} died. Restarting...`);
       cluster.fork();
     });
   } else {
-    const app = await NestFactory.create(AppModule);
-    app.use(cors());
+    const app = await NestFactory.create(AppModule, { bufferLogs: true });
+    app.useGlobalPipes(new ValidationPipe({ transform: true }));
+    app.enableCors();
+    app.use(compression());
     const configService = app.get(ConfigService);
     const logger = new Logger('Main');
     const loadBalancer = new LoadBalancer();
@@ -46,7 +45,7 @@ async function bootstrap() {
 
     const subscribeToAnalytics = async () => {
       logger.log('Starting analytics subscriber');
-      await asyncAnalytics.onModuleInit();
+      await asyncAnalytics.initialize();
     };
 
     app.enableShutdownHooks();

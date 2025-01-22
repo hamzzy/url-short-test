@@ -1,11 +1,14 @@
+// circuit-breaker.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RedisClient } from './redis-client';
 
 enum CircuitState {
   CLOSED,
   OPEN,
   HALF_OPEN,
 }
+
 @Injectable()
 export class CircuitBreaker {
   private readonly logger = new Logger(CircuitBreaker.name);
@@ -16,7 +19,12 @@ export class CircuitBreaker {
   private openTime = 0;
   private readonly failureThreshold: number = 5;
   private readonly retryTimeout: number = 10000;
-  constructor(private readonly configService: ConfigService) {}
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly redisClient: RedisClient,
+  ) {}
+
   async execute<T>(
     operation: () => Promise<T>,
     fallback?: () => T | Promise<T>,
@@ -49,7 +57,7 @@ export class CircuitBreaker {
     }
   }
 
-  private recordFailure(): void {
+  private async recordFailure(): Promise<void> {
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
@@ -62,10 +70,18 @@ export class CircuitBreaker {
     this.state = CircuitState.OPEN;
     this.openTime = Date.now();
   }
-  private transitionToHalfOpen(): void {
+
+  private async transitionToHalfOpen(): Promise<void> {
     this.logger.warn('Transition to HALF_OPEN');
     this.state = CircuitState.HALF_OPEN;
+    const redisHealth = await this.redisClient.healthCheck();
+    if (redisHealth) {
+      this.reset();
+    } else {
+      this.logger.warn('Redis is still unhealthy, remain in HALF_OPEN');
+    }
   }
+
   private reset(): void {
     this.logger.warn('Reset');
     this.state = CircuitState.CLOSED;
