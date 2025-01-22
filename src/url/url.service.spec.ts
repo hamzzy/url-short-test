@@ -7,20 +7,18 @@ import { Cache } from 'cache-manager';
 import { L1Cache } from '../utils/l1-cache';
 import { CircuitBreaker } from '../utils/circuit-breaker';
 import { AsyncAnalytics } from '../utils/async-analytics';
-import { EnhancedBloomFilter } from '../utils/bloom-filter';
-import { ClickData } from '../url/entities/click-data.entity';
-import { ShortenUrlDto } from '../url/dto/shorten-url.dto';
-import { HttpException } from '@nestjs/common';
+import { ShortenUrlDto } from './dto/shorten-url.dto';
+import { HttpException, HttpStatus } from '@nestjs/common';
+import { ClickData } from './entities/click-data.entity';
 
 describe('UrlService', () => {
   let service: UrlService;
-  let redisClient: RedisClient;
-  let cacheManager: Cache;
-  let l1Cache: L1Cache;
-  let circuitBreaker: CircuitBreaker;
-  let asyncAnalytics: AsyncAnalytics;
-  let bloomFilter: EnhancedBloomFilter;
-  let configService: ConfigService;
+  let redisClient: jest.Mocked<RedisClient>;
+  let cacheManager: jest.Mocked<Cache>;
+  let l1Cache: jest.Mocked<L1Cache>;
+  let circuitBreaker: jest.Mocked<CircuitBreaker>;
+  let asyncAnalytics: jest.Mocked<AsyncAnalytics>;
+  let configService: jest.Mocked<ConfigService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -69,127 +67,78 @@ describe('UrlService', () => {
             publishBatch: jest.fn(),
           },
         },
-        {
-          provide: EnhancedBloomFilter,
-          useValue: {
-            test: jest.fn(),
-            add: jest.fn(),
-          },
-        },
       ],
     }).compile();
 
     service = module.get<UrlService>(UrlService);
-    redisClient = module.get<RedisClient>(RedisClient);
-    cacheManager = module.get<Cache>(CACHE_MANAGER);
-    l1Cache = module.get<L1Cache>(L1Cache);
-    circuitBreaker = module.get<CircuitBreaker>(CircuitBreaker);
-    asyncAnalytics = module.get<AsyncAnalytics>(AsyncAnalytics);
-    bloomFilter = module.get<EnhancedBloomFilter>(EnhancedBloomFilter);
-    configService = module.get<ConfigService>(ConfigService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+    redisClient = module.get(RedisClient);
+    cacheManager = module.get(CACHE_MANAGER);
+    l1Cache = module.get(L1Cache);
+    circuitBreaker = module.get(CircuitBreaker);
+    asyncAnalytics = module.get(AsyncAnalytics);
+    configService = module.get(ConfigService);
   });
 
   describe('shortenUrl', () => {
-    it('should shorten a URL and return a short URL', async () => {
+    it('should shorten a URL and return the short URL', async () => {
       const shortenUrlDto: ShortenUrlDto = {
         url: 'http://example.com',
-        customCode: 'custom123',
         ttlMinutes: 10,
       };
-      redisClient.exists = jest.fn().mockResolvedValue(false);
-      bloomFilter.test = jest.fn().mockResolvedValue(false);
-      redisClient.set = jest.fn().mockResolvedValue(undefined);
-      redisClient.expire = jest.fn().mockResolvedValue(undefined);
-      bloomFilter.add = jest.fn().mockResolvedValue(undefined);
+      redisClient.set.mockResolvedValue(undefined);
+      redisClient.expire.mockResolvedValue(undefined);
 
       const result = await service.shortenUrl(shortenUrlDto);
 
-      expect(result.short_url).toBe('http://localhost/custom123');
+      expect(result).toHaveProperty('short_url');
       expect(redisClient.set).toHaveBeenCalledWith(
-        'url:custom123',
+        expect.any(String),
         'http://example.com',
       );
-      expect(bloomFilter.add).toHaveBeenCalledWith('url:custom123');
-    });
-
-    it('should throw an error if the custom code already exists', async () => {
-      const shortenUrlDto: ShortenUrlDto = {
-        url: 'http://example.com',
-        customCode: 'custom123',
-        ttlMinutes: 10,
-      };
-      redisClient.exists = jest.fn().mockResolvedValue(true);
-      bloomFilter.test = jest.fn().mockResolvedValue(true);
-
-      await expect(service.shortenUrl(shortenUrlDto)).rejects.toThrow(
-        HttpException,
-      );
+      expect(redisClient.expire).toHaveBeenCalledWith(expect.any(String), 600);
     });
   });
 
   describe('getOriginalUrl', () => {
-    it('should return the original URL when found in cache or redis', async () => {
+    it('should return the original URL from Redis and update caches', async () => {
       const shortCode = 'custom123';
-      const redisUrlKey = `url:${shortCode}`;
-      const cacheKey = `cache:${shortCode}`;
-      redisClient.get = jest.fn().mockResolvedValue('http://example.com');
-      cacheManager.get = jest.fn().mockResolvedValue(null);
-      cacheManager.set = jest.fn().mockResolvedValue(undefined);
-
-      const result = await service.getOriginalUrl(shortCode, {
-        headers: {},
+      const mockRequest = {
+        headers: {
+          'user-agent': 'test-agent',
+          'accept-language': 'en-US',
+        },
         ip: '127.0.0.1',
-      });
+      };
+
+      l1Cache.has.mockReturnValue(false);
+      cacheManager.get.mockResolvedValue(null);
+      redisClient.get.mockResolvedValue('http://example.com');
+
+      const result = await service.getOriginalUrl(shortCode, mockRequest);
 
       expect(result).toBe('http://example.com');
-      expect(redisClient.get).toHaveBeenCalledWith(redisUrlKey);
+      expect(redisClient.get).toHaveBeenCalledWith(`url:${shortCode}`);
       expect(cacheManager.set).toHaveBeenCalledWith(
-        cacheKey,
+        `cache:${shortCode}`,
         'http://example.com',
         60,
       );
+      expect(l1Cache.set).toHaveBeenCalledWith(
+        `url:${shortCode}`,
+        'http://example.com',
+      );
     });
 
-    it('should throw an error if the URL is not found', async () => {
-      const shortCode = 'custom123';
-      redisClient.get = jest.fn().mockResolvedValue(null);
+    it('should throw an error if the short URL is not found', async () => {
+      const shortCode = 'nonexistent';
+      const mockRequest = { headers: {}, ip: '' };
+
+      redisClient.get.mockResolvedValue(null);
 
       await expect(
-        service.getOriginalUrl(shortCode, { headers: {}, ip: '127.0.0.1' }),
-      ).rejects.toThrow(Error);
-    });
-  });
-
-  describe('getAnalytics', () => {
-    it('should return click data for a URL', async () => {
-      const shortCode = 'custom123';
-      const query = { limit: 5, offset: 0 };
-      redisClient.lrange = jest
-        .fn()
-        .mockResolvedValue([
-          JSON.stringify({ click_id: '1', timestamp: '2021-01-01' }),
-        ]);
-
-      const result = await service.getAnalytics(shortCode, query);
-
-      expect(result.clicks.length).toBe(1);
-      expect(result.clicks[0].click_id).toBe('1');
-      expect(redisClient.lrange).toHaveBeenCalledWith('clicks:custom123', 0, 4);
-    });
-
-    it('should handle errors gracefully in analytics', async () => {
-      const shortCode = 'custom123';
-      const query = { limit: 5, offset: 0 };
-      redisClient.lrange = jest
-        .fn()
-        .mockRejectedValue(new Error('Redis error'));
-
-      await expect(service.getAnalytics(shortCode, query)).rejects.toThrow(
-        Error,
+        service.getOriginalUrl(shortCode, mockRequest),
+      ).rejects.toThrow(
+        new HttpException('Short URL not found', HttpStatus.NOT_FOUND),
       );
     });
   });

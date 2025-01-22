@@ -28,16 +28,12 @@ The system is built with a microservices-like architecture, comprising the follo
         * Implements a precomputed lookup table to ensure fast lookups
     *   `ioredis` used to provide robust connection pooling.
 
-5.  **Bloom Filter:**
-    *   Implemented locally in the server for each url.
-    *   A probabilistic data structure to quickly check if a short URL key exists, avoiding unnecessary Redis lookups.
-
-6.  **Circuit Breaker:**
+5.  **Circuit Breaker:**
     *   Protects against Redis node failures by temporarily stopping requests when Redis is unavailable, and allowing it to try to recover after a timeout.
     *   Avoids cascading failures.
     * Configurable failure threshold and retry timeout
 
-7.  **Asynchronous Analytics (RabbitMQ):**
+6.  **Asynchronous Analytics (RabbitMQ):**
     *   Handles analytics asynchronously using RabbitMQ as a message broker.
     *   When short URLs are accessed, a message is published to a queue containing click data, which is later used to store in Redis.
     * Uses a channel with a publisher and consumer.
@@ -55,16 +51,15 @@ This section describes how to start the URL shortener service using Docker Compo
 
     ```env
       PORT=3000
-        REDIS_URLS=redis-cluster-1:6379,redis-cluster-2:6379,redis-cluster-3:6379
-        REDIS_POOL_SIZE=100
-        BASE_URL=http://localhost
+        REDIS_URLS=redis://127.0.0.1:6379,redis://127.0.0.1:6382,redis://127.0.0.1:6383
+        BASE_URL=http://localhost:3000
         CACHE_ENABLED=true
         L1_CACHE_SIZE=1000
         RATE_LIMIT_WINDOW_SEC=60
         RATE_LIMIT_MAX_REQUESTS=100
         CLEANUP_INTERVAL_MIN=60
         VIRTUAL_NODES=10
-        RABBITMQ_URL=amqp://guest:guest@rabbitmq
+        RABBITMQ_URL=amqp://localhost:5672
     ```
     * **Note:** For a real production system use proper secrets management, rather than placing secrets in the `.env` file.
 

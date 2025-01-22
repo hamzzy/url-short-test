@@ -81,30 +81,30 @@ services:
     restart: unless-stopped
 
 
-  nestjs-app:
-    build:
-      context: .
-    container_name: nestjs-app
-    env_file:
-      - .env  # Ensure this path is correct
-    ports:
-      - "3000:3000"
-    volumes:
-      - .:/usr/src/app
-      - /usr/src/app/node_modules
-    depends_on:
-       rabbitmq:
-           condition: service_healthy
-    networks:
-      backend:
-        aliases:
-          - nestjs-app
-    healthcheck:
-      test: curl --fail http://localhost:3000 || exit 1
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
+#   nestjs-app:
+#     build:
+#       context: .
+#     container_name: nestjs-app
+#     env_file:
+#       - .env  # Ensure this path is correct
+#     ports:
+#       - "3000:3000"
+#     volumes:
+#       - .:/usr/src/app
+#       - /usr/src/app/node_modules
+#     depends_on:
+#        rabbitmq:
+#            condition: service_healthy
+#     networks:
+#       backend:
+#         aliases:
+#           - nestjs-app
+#     healthcheck:
+#       test: curl --fail http://localhost:3000 || exit 1
+#       interval: 30s
+#       timeout: 10s
+#       retries: 3
+#     restart: unless-stopped
 
   nginx:
     image: nginx:latest
@@ -113,8 +113,6 @@ services:
       - "8080:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - nestjs-app
     networks:
       backend:
         aliases:

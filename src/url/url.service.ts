@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, HttpException } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { RedisClient } from '../utils/redis-client';
@@ -10,13 +10,11 @@ import { CircuitBreaker } from '../utils/circuit-breaker';
 import { AsyncAnalytics } from '../utils/async-analytics';
 import { ClickData } from '../url/entities/click-data.entity';
 import { ShortenUrlDto } from '../url/dto/shorten-url.dto';
-import { EnhancedBloomFilter } from '../utils/bloom-filter';
+// import { EnhancedBloomFilter } from '../utils/bloom-filter';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
-
 @Injectable()
 export class UrlService {
   private readonly logger = new Logger(UrlService.name);
-  private bloomFilter: EnhancedBloomFilter;
   private clickDataBatch: { clickKey: string; clickData: ClickData }[] = [];
   private BATCH_SIZE = 10;
   private BATCH_INTERVAL = 1000; // 1 second
@@ -36,11 +34,7 @@ export class UrlService {
     private readonly circuitBreaker: CircuitBreaker,
     private readonly asyncAnalytics: AsyncAnalytics,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
-  ) {
-    this.bloomFilter = new EnhancedBloomFilter(1000000, 0.01, {
-      counting: true,
-    });
-  }
+  ) {}
 
   private generateShortCode(length: number): string {
     const charset =
@@ -54,18 +48,12 @@ export class UrlService {
   }
 
   async shortenUrl(shortenUrlDto: ShortenUrlDto): Promise<any> {
-    const { url, customCode, ttlMinutes } = shortenUrlDto;
-    const shortCode = customCode || this.generateShortCode(7);
+    const { url, ttlMinutes } = shortenUrlDto;
+    const shortCode = this.generateShortCode(7);
     const redisUrlKey = `url:${shortCode}`;
 
     try {
       // Check the Bloom filter
-      if (await this.bloomFilter.test(redisUrlKey)) {
-        const exists = await this.redisClient.exists(redisUrlKey);
-        if (exists) {
-          throw new HttpException('Custom code already in use', 400);
-        }
-      }
 
       const result = await this.circuitBreaker.execute(async () => {
         await this.redisClient.set(redisUrlKey, url);
@@ -73,9 +61,6 @@ export class UrlService {
         if (ttlMinutes) {
           await this.redisClient.expire(redisUrlKey, ttlMinutes * 60);
         }
-
-        // Add to the Bloom filter
-        await this.bloomFilter.add(redisUrlKey);
 
         return `${this.configService.get('base_url')}/${shortCode}`;
       });
@@ -95,11 +80,6 @@ export class UrlService {
     try {
       if (this.l1Cache.has(l1CacheKey)) {
         return this.l1Cache.get(l1CacheKey);
-      }
-
-      // Check the Bloom filter
-      if (!(await this.bloomFilter.test(redisUrlKey))) {
-        throw new Error('Short URL not found');
       }
 
       const originalUrl = await this.circuitBreaker.execute(

@@ -9,10 +9,6 @@ export class ShortenUrlDto {
   url: string;
 
   @IsOptional()
-  @IsString()
-  customCode?: string;
-
-  @IsOptional()
   @IsNumber()
   ttlMinutes?: number;
 
