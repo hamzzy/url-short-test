@@ -11,7 +11,7 @@ import {
   Req,
   NotFoundException,
   BadRequestException,
-  InternalServerErrorException,
+  HttpException,
 } from '@nestjs/common';
 import { UrlService } from './url.service';
 import {
@@ -26,6 +26,7 @@ import {
 import { ShortenUrlDto } from './dto/shorten-url.dto';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { ClickData } from './entities/click-data.entity';
+import * as NodeCache from 'node-cache';
 
 @ApiTags('url')
 @Controller()
@@ -44,12 +45,12 @@ export class UrlController {
         throw new BadRequestException('URL is required');
       }
       const shortUrl = await this.urlService.shortenUrl(shortenUrlDto);
-      return { shortUrl, message: 'URL shortened successfully' };
+      return shortUrl;
     } catch (error) {
       if (error instanceof BadRequestException) {
-        throw error;
+        throw new HttpException(error.message || '', HttpStatus.BAD_REQUEST);
       }
-      throw new InternalServerErrorException('Failed to shorten URL');
+      throw new HttpException(error.message || 'Failed to shorten URL', 400);
     }
   }
 
@@ -67,10 +68,16 @@ export class UrlController {
     }
 
     try {
-      const originalUrl = await this.urlService.getOriginalUrl(shortCode, req);
-      return { url: originalUrl };
+      const url = await this.urlService.getOriginalUrl(shortCode, req);
+      return { url: url };
     } catch (error) {
-      throw new NotFoundException('Invalid or expired short code');
+      if (error instanceof BadRequestException) {
+        throw new HttpException(
+          error.message || 'Invalid or expired short code',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      throw new HttpException(error.message, HttpStatus.NOT_FOUND);
     }
   }
 
@@ -83,23 +90,22 @@ export class UrlController {
   async getAnalytics(
     @Param('shortCode') shortCode: string,
     @Query() query: AnalyticsQueryDto,
-  ) {
+  ): Promise<{ clicks: ClickData[] }> {
     if (!shortCode) {
       throw new BadRequestException('Short code is required');
     }
 
     try {
       const analytics = await this.urlService.getAnalytics(shortCode, query);
-      return { 
-        clicks: analytics.clicks,
-        totalClicks: analytics.clicks.length,
-        shortCode 
-      };
+      return analytics;
     } catch (error) {
       if (error instanceof NotFoundException) {
-        throw error;
+        throw new HttpException('url code not found', HttpStatus.NOT_FOUND);
       }
-      throw new InternalServerErrorException('Failed to retrieve analytics');
+      throw new HttpException(
+        error.message || 'Failed to retrieve analytics',
+        HttpStatus.NOT_FOUND,
+      );
     }
   }
 }

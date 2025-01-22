@@ -12,6 +12,6 @@ export default () => ({
   cleanup_interval_min: parseInt(process.env.CLEANUP_INTERVAL_MIN, 10) || 60,
   virtual_nodes: parseInt(process.env.VIRTUAL_NODES, 10) || 10,
   rabbitmq: {
-    url: process.env.RABBITMQ_URL || 'amqp://localhost',
+    url: process.env.RABBITMQ_URL,
   },
 });

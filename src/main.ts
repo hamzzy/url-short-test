@@ -4,15 +4,12 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Logger, ValidationPipe } from '@nestjs/common';
 // import { HealthCheckService } from '@nestjs/terminus';
-import { LoadBalancer } from './utils/load-balancer';
 import { AsyncAnalytics } from './utils/async-analytics';
 import compression from 'compression';
 import cluster from 'cluster';
-import os from 'os';
 async function bootstrap() {
   if (cluster.isPrimary) {
-    const numCPUs = os.cpus().length;
-    for (let i = 0; i < numCPUs; i++) {
+    for (let i = 0; i < 3; i++) {
       cluster.fork();
     }
     cluster.on('exit', (worker) => {
@@ -26,7 +23,6 @@ async function bootstrap() {
     app.use(compression());
     const configService = app.get(ConfigService);
     const logger = new Logger('Main');
-    const loadBalancer = new LoadBalancer();
     const asyncAnalytics = app.get(AsyncAnalytics);
 
     const options = new DocumentBuilder()
@@ -35,17 +31,16 @@ async function bootstrap() {
       .setVersion('1.0')
       .build();
     const document = SwaggerModule.createDocument(app, options);
-    SwaggerModule.setup('api', app, document);
+    SwaggerModule.setup('api-docs', app, document);
 
-    const servers = [configService.get<number>('port').toString()];
-    loadBalancer.addServers(servers);
+    const servers = configService.get<number>('port').toString();
 
-    const nextServer = await loadBalancer.next();
-    logger.log(`Selected server ${nextServer}`);
+    // Get healthy servers
+    logger.log(`Selected server ${servers}`);
 
     const subscribeToAnalytics = async () => {
-      logger.log('Starting analytics subscriber');
       await asyncAnalytics.initialize();
+      logger.log('Starting analytics subscriber');
     };
 
     app.enableShutdownHooks();
@@ -53,8 +48,8 @@ async function bootstrap() {
     await subscribeToAnalytics();
 
     const start = async () => {
-      app.listen(parseInt(nextServer));
-      logger.log(`Server running on port ${nextServer}`);
+      app.listen(parseInt(servers));
+      logger.log(`Server running on port ${servers}`);
     };
     start();
   }

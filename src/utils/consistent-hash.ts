@@ -1,22 +1,26 @@
-import Farm from 'farmhash';
+import crypto from 'crypto';
 
 interface Node {
   id: string;
   virtualNodes: number[];
 }
+
 export class ConsistentHash {
   private nodes: Node[] = [];
   private ring: string[] = [];
   private ringSize: number = 0;
   private virtualNodesPerNode: number = 10;
-  private hashFn = (key: string) => Farm.hash32(key);
+  private hashFn = (key: string): number => {
+    const hash = crypto.createHash('md5').update(key).digest('hex');
+    return parseInt(hash.substring(0, 8), 16);
+  };
   private lookupTable: Map<number, string> = new Map();
 
   constructor(nodes: string[], virtualNodesPerNode: number = 10) {
     this.virtualNodesPerNode = virtualNodesPerNode;
     this.addNodes(nodes);
   }
-  private addNodes(nodeIds: string[]) {
+  public addNodes(nodeIds: string[]) {
     this.nodes = nodeIds.map((nodeId) => ({
       id: nodeId,
       virtualNodes: Array.from({ length: this.virtualNodesPerNode }, (_, i) =>

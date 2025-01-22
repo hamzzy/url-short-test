@@ -1,8 +1,7 @@
-// async-analytics.ts
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { connect, Channel, Connection, ConsumeMessage } from 'amqplib';
-import { ClickData } from 'src/url/entities/click-data.entity';
+import { ClickData } from '../url/entities/click-data.entity';
 
 @Injectable()
 export class AsyncAnalytics implements OnModuleDestroy {
@@ -12,8 +11,10 @@ export class AsyncAnalytics implements OnModuleDestroy {
   private readonly QUEUE_NAME = 'click_events';
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private rabbitmqUrl: string;
 
   constructor(private configService: ConfigService) {
+    this.rabbitmqUrl = this.configService.get('rabbitmq_url');
     this.initialize();
   }
   public async initialize() {
@@ -26,7 +27,8 @@ export class AsyncAnalytics implements OnModuleDestroy {
 
   private async connect() {
     try {
-      this.connection = await connect(this.configService.get('rabbitmq_url'));
+      this.logger.log(`Attempting connection to ${this.rabbitmqUrl}`);
+      this.connection = await connect(this.rabbitmqUrl);
       this.channel = await this.connection.createChannel();
       await this.channel.assertQueue(this.QUEUE_NAME, { durable: true });
       this.channel.prefetch(100); // Adjust prefetch value
@@ -42,6 +44,7 @@ export class AsyncAnalytics implements OnModuleDestroy {
       });
 
       this.reconnectAttempts = 0;
+      this.logger.log('Connection to rabbitmq successful');
     } catch (err) {
       this.logger.error(`Connection error: ${err}`);
       throw err;
@@ -66,22 +69,6 @@ export class AsyncAnalytics implements OnModuleDestroy {
       this.logger.error(`Reconnection failed: ${err}`);
     }
   }
-  // async publish(data: { clickKey: string; clickData: ClickData }) {
-  //   try {
-  //     if (!this.channel || this.channel.closed) {
-  //       await this.connect();
-  //     }
-
-  //     const message = JSON.stringify(data);
-  //     await this.channel.sendToQueue(this.QUEUE_NAME, Buffer.from(message), {
-  //       persistent: true,
-  //     });
-  //   } catch (err) {
-  //     this.logger.error(`Error publishing message: ${err}`);
-  //     throw err;
-  //   }
-  // }
-
   async publishBatch(data: { clickKey: string; clickData: ClickData }[]) {
     try {
       if (!this.channel || this.channel.closed) {
@@ -99,7 +86,6 @@ export class AsyncAnalytics implements OnModuleDestroy {
       throw err;
     }
   }
-
   async consume(callback: (data: any) => Promise<void>) {
     try {
       if (!this.channel || this.channel.closed) {

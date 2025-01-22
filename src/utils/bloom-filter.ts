@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import Farm from 'farmhash';
 import { Worker } from 'worker_threads';
 import { createHash } from 'crypto';
 
@@ -62,10 +61,10 @@ export class EnhancedBloomFilter {
       const worker = new Worker(
         `
         const { parentPort } = require('worker_threads');
-        const Farm = require('farmhash');
+        const { createHash } = require('crypto');
         
         parentPort.on('message', ({ key, seed, bitSetSize }) => {
-          const hash = Math.abs(Farm.hash32WithSeed(key, seed) % bitSetSize);
+          const hash = Math.abs(createHash('sha256').update(key + seed).digest('hex').slice(0, 8), 16) % bitSetSize;
           parentPort.postMessage(hash);
         });
       `,
@@ -76,18 +75,11 @@ export class EnhancedBloomFilter {
   }
 
   private hash(key: string, seed: number): number {
-    // Use multiple hash functions for better distribution
-    switch (seed % 3) {
-      case 0:
-        return Math.abs(Farm.hash32WithSeed(key, seed) % this.bitSetSize);
-      case 1:
-        return Math.abs(Farm.fingerprint32(key + seed) % this.bitSetSize);
-      case 2:
-        const md5 = createHash('md5')
-          .update(key + seed)
-          .digest();
-        return Math.abs(md5.readUInt32LE(0) % this.bitSetSize);
-    }
+    // Use crypto.createHash instead of Farm
+    const hash = createHash('sha256')
+      .update(key + seed)
+      .digest('hex');
+    return Math.abs(parseInt(hash.slice(0, 8), 16) % this.bitSetSize);
   }
 
   private async parallelHash(key: string): Promise<number[]> {
