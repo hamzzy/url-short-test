@@ -46,6 +46,7 @@ This section describes how to start the URL shortener service using Docker Compo
 
 *   Docker and Docker Compose installed on your system.
 *   A `.env` file with configuration variables (see the `.env.example` file)
+*   Edit nginx with yoru ip address (server 195.168.0.157:3000;)
 
 1.  **Create a `.env` file** (or copy from `.env.example` and update):
 
